@@ -1,0 +1,33 @@
+services:
+  payments_api:
+    build: .
+    container_name: payments-api
+    expose:
+      - "8000"
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@payments_db:5432/${POSTGRES_DB:-payments_db}
+    depends_on:
+      payments_db:
+        condition: service_healthy
+
+  payments_db:
+    image: postgres:15-alpine
+    container_name: payments-db
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-payments_db}
+    volumes:
+      - payments_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-payments_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  payments_db_data:
