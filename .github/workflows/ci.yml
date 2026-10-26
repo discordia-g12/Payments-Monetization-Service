@@ -6,9 +6,50 @@ on:
   pull_request:
     branches: [main, develop]
 
-# Todavía sin tests (tests/ está vacío): por ahora solo se valida y publica la imagen.
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # Para el test de /readyz contra una base real (misma versión mayor que el RDS)
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: payments_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d payments_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/payments_db
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run tests
+        run: pytest -v
+
   docker:
+    needs: test
     # PR: construye la imagen para validar el Dockerfile. Push a main/develop: además la publica en GHCR
     # con el SHA del commit (lo que se despliega) y el nombre de la rama. Sin "latest".
     runs-on: ubuntu-latest
@@ -58,3 +99,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Solo en push a main, con la imagen ya en GHCR: el workflow del orquestador la despliega en el nodo infra
+  # por SSM y falla si no queda healthy (en ese caso el nodo vuelve solo al tag anterior).
+  deploy:
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    uses: discordia-g12/discordia-orchestrator/.github/workflows/deploy.yml@main
+    with:
+      service: payments-service
+      node: infra
+      sha: ${{ github.sha }}

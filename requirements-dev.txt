@@ -1,0 +1,8 @@
+-r requirements.txt
+
+# Test
+pytest==9.1.1
+httpx==0.28.1 # lo usa el TestClient de FastAPI
+
+# Lint
+ruff==0.16.7
