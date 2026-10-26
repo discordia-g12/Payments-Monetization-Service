@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Response, status
 import os
+
+from fastapi import FastAPI, Response, status
 from sqlalchemy import create_engine, text
 
 app = FastAPI(title="Payments & Monetization Service")
