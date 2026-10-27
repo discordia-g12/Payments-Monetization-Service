@@ -4,5 +4,6 @@
 pytest==9.1.1
 httpx==0.28.1 # lo usa el TestClient de FastAPI
 
-# Lint
+# Lint y SAST
 ruff==0.16.7
+bandit==1.9.4
