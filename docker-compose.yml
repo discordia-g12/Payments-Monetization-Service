@@ -2,10 +2,12 @@ services:
   payments_api:
     build: .
     container_name: payments-api
-    expose:
-      - "8000"
+    ports:
+      - "8003:8000" # el mismo puerto que publica en producción
     volumes:
       - .:/app
+    # Solo en local: recarga al editar (la imagen de producción corre sin --reload)
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@payments_db:5432/${POSTGRES_DB:-payments_db}
     depends_on:
@@ -15,8 +17,8 @@ services:
   payments_db:
     image: postgres:15-alpine
     container_name: payments-db
-    expose:
-      - "5432"
+    ports:
+      - "5435:5432" # desde el host: uvicorn, pytest y psql
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
