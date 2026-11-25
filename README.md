@@ -5,8 +5,8 @@ el plan Premium, la billetera de puntos y las mejoras (boosts) de servidor.
 
 **Estado actual:** tiene la app de FastAPI con SQLAlchemy async (asyncpg), los health checks, las migraciones
 de Alembic con el esquema base (ver [Modelo de datos](#modelo-de-datos)), los tests y el pipeline de CI/CD.
-Funcionalidad: **comprar puntos** (con pasarela simulada y saga de compra), saldo e historial. Boosts y Premium
-vienen después. El Gateway le enruta `/api/v1/payments`, `/api/v1/points` y `/api/v1/boosts`.
+Funcionalidad: **comprar puntos** (con pasarela simulada y saga de compra), saldo e historial, y **boostear y
+retirar boosts** de servidor. Los beneficios por nivel y Premium vienen después. El Gateway le enruta `/api/v1/payments`, `/api/v1/points` y `/api/v1/boosts`.
 
 Decisiones de diseño (persistencia, billetera, concurrencia, pasarela, boosts y beneficios):
 [ADR-001](docs/ADR-001-Puntos-y-Boosts.md).
@@ -61,6 +61,8 @@ publica el 8003 y usa la base `payments_db` del Postgres compartido (en producci
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `DATABASE_URL` | — | PostgreSQL, en formato de SQLAlchemy (`postgresql+asyncpg://usuario:clave@host:puerto/base`). Se acepta otro driver (`postgresql+psycopg2://`, `postgresql://`): el servicio y Alembic siempre usan asyncpg. Sin ella, `/readyz` responde `503` |
+| `SERVER_ROLES_URL` | — | Server-Roles, para verificar la membresía al boostear (`/internal/servers/{id}/member-ids`). En producción `http://<EDGE_HOST>:8002`. Sin ella, boostear responde `503` (nunca deja pasar sin verificar). En el compose de este repo no está: para probar boosts a mano, levantar Payments con el compose del orquestador |
+| `SERVER_ROLES_TIMEOUT_SECONDS` | `2` | Timeout de esa consulta |
 
 ## API
 
@@ -72,6 +74,9 @@ publica el 8003 y usa la base `payments_db` del Postgres compartido (en producci
 | `GET` | `/api/v1/points/packages` | Paquetes de puntos a la venta |
 | `POST` | `/api/v1/points/purchases` | Comprar un paquete: `{package_id, card_number}` y header `Idempotency-Key`. `201` acreditado, `402` rechazado, `503` sin confirmar o devuelto ([ADR-001 §2.11](docs/ADR-001-Puntos-y-Boosts.md)) |
 | `GET` | `/api/v1/points/wallet` | Saldo e historial, del más nuevo al más viejo (`?limit=&before=`) |
+| `POST` | `/api/v1/boosts/servers/{server_id}` | Boostear (500 puntos) con `Idempotency-Key`. `201` con el boost, el nivel del servidor y el saldo; `409 insufficient_points` con lo que falta; `403` si no es miembro |
+| `DELETE` | `/api/v1/boosts/{boost_id}` | Retirar un boost propio, sin reembolso. El servidor baja de nivel si queda debajo del umbral |
+| `GET` | `/api/v1/boosts/mine` | Mis boosts vigentes (`?server_id=` para uno) |
 
 Las rutas de `/api/v1` necesitan `X-User-Id`, que pone Kong al validar el token (sin él, `401`). Los errores
 son `application/problem+json` con un `code` estable. Tarjetas de prueba: `4242 4242 4242 4242` (aprobada),

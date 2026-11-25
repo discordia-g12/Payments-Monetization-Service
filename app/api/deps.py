@@ -1,8 +1,11 @@
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.clients.server_roles import HttpServerRolesClient, ServerRolesClient, UnconfiguredServerRolesClient
+from app.core.config import get_settings
 from app.core.errors import AppError
 from app.db.session import get_session_factory
 from app.services.payment_gateway import PaymentGateway, SimulatedPaymentGateway
@@ -43,7 +46,21 @@ def get_payment_gateway() -> PaymentGateway:
     return _gateway
 
 
+@lru_cache
+def _server_roles_for(url: str | None, timeout_seconds: float) -> ServerRolesClient:
+    if not url:
+        return UnconfiguredServerRolesClient()
+    return HttpServerRolesClient(url, timeout_seconds)
+
+
+def get_server_roles() -> ServerRolesClient:
+    """Un cliente por proceso (reutiliza las conexiones). Sin SERVER_ROLES_URL, boostear responde 503."""
+    settings = get_settings()
+    return _server_roles_for(settings.server_roles_url, settings.server_roles_timeout_seconds)
+
+
 CurrentUser = Annotated[str, Depends(get_current_user_id)]
 IdempotencyKey = Annotated[str, Depends(get_idempotency_key)]
 Gateway = Annotated[PaymentGateway, Depends(get_payment_gateway)]
+ServerRoles = Annotated[ServerRolesClient, Depends(get_server_roles)]
 Sessions = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]

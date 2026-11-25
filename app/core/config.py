@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # servicio siempre usa asyncpg (async_database_url). Sin ella, /readyz responde 503.
     database_url: str | None = None
 
+    # Server-Roles, para verificar la membresía al boostear (ADR-001 §2.9). Sin ella, boostear responde 503.
+    # En producción: http://<EDGE_HOST>:8002 (Payments corre en infra, Server-Roles en edge).
+    server_roles_url: str | None = None
+    server_roles_timeout_seconds: float = 2.0
+
 
 def async_database_url(url: str) -> str:
     """La misma base con el driver async (`postgresql+asyncpg`), conservando credenciales escapadas."""

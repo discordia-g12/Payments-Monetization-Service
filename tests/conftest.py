@@ -6,7 +6,7 @@ FOR UPDATE ni índices parciales). Sin DATABASE_URL se saltean; con Docker:
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -17,10 +17,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from alembic import command
-from app.api.deps import get_payment_gateway
+from app.api.deps import get_payment_gateway, get_server_roles
+from app.clients.server_roles import MembershipUnavailableError
 from app.core.config import async_database_url
 from app.db.session import _engine_for, get_db, get_session_factory
 from app.main import app
+from app.repositories import wallets
 from app.services.payment_gateway import ChargeResult, PaymentGatewayError, SimulatedPaymentGateway
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,8 +99,8 @@ def sessions(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 @pytest_asyncio.fixture
-async def client(sessions, gateway) -> AsyncGenerator[AsyncClient]:
-    """Cliente HTTP sobre la app, con la base y la pasarela del test (mismo event loop que el test)."""
+async def client(sessions, gateway, server_roles) -> AsyncGenerator[AsyncClient]:
+    """Cliente HTTP sobre la app, con la base, la pasarela y el Server-Roles del test (mismo event loop)."""
 
     async def override_get_db() -> AsyncGenerator[AsyncSession]:
         async with sessions() as session:
@@ -107,6 +109,7 @@ async def client(sessions, gateway) -> AsyncGenerator[AsyncClient]:
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_session_factory] = lambda: sessions
     app.dependency_overrides[get_payment_gateway] = lambda: gateway
+    app.dependency_overrides[get_server_roles] = lambda: server_roles
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
             yield http
@@ -164,10 +167,7 @@ def as_user() -> Callable[..., dict[str, str]]:
 
 
 class FakeServerRoles:
-    """
-    Server-Roles de mentira: quién es miembro de qué servidor, y si responde. Se conecta a la app cuando exista
-    el cliente de membresía (historia de boosts), con app.dependency_overrides.
-    """
+    """Server-Roles de mentira: quién es miembro de qué servidor, y si responde (lo usa el fixture `client`)."""
 
     def __init__(self) -> None:
         self.members: dict[str, set[str]] = {}
@@ -181,7 +181,7 @@ class FakeServerRoles:
         """None: el servidor no existe. Lanza si Server-Roles "está caído"."""
         self.calls += 1
         if not self.available:
-            raise ConnectionError("Server-Roles no responde")
+            raise MembershipUnavailableError("Server-Roles no responde")
         await asyncio.sleep(0)
         return self.members.get(server_id)
 
@@ -189,3 +189,19 @@ class FakeServerRoles:
 @pytest.fixture
 def server_roles() -> FakeServerRoles:
     return FakeServerRoles()
+
+
+# ── Datos ──
+
+
+@pytest.fixture
+def give_points(sessions) -> Callable[[str, int], Awaitable[None]]:
+    """`await give_points("u1", 1000)`: le carga saldo a un usuario (un movimiento `adjustment`), sin comprar."""
+
+    async def give(user_id: str, amount: int) -> None:
+        async with sessions() as session:
+            wallet = await wallets.lock_wallet(session, user_id)
+            wallets.apply_movement(session, wallet, amount, "adjustment")
+            await session.commit()
+
+    return give

@@ -8,7 +8,7 @@ from fastapi import FastAPI, Response, status
 from sqlalchemy import text
 
 from app.api.deps import get_payment_gateway
-from app.api.v1 import points
+from app.api.v1 import boosts, points
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import DatabaseNotConfiguredError, get_engine, get_sessionmaker
@@ -49,6 +49,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Payments & Monetization Service", lifespan=lifespan)
 register_error_handlers(app)
 app.include_router(points.router)
+app.include_router(boosts.router)
 
 
 @app.get("/")

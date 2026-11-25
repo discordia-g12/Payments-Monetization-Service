@@ -1,7 +1,7 @@
 # ADR-001: Persistencia, billetera de puntos y boosts de servidor
 
 - **Estado:** Aceptado. Implementado: esquema y migraciones (§2.1 a §2.4), comprar puntos y su saga (§2.5,
-  §2.6, §2.11). Pendiente: el resto, por historia (§5)
+  §2.6, §2.11), boostear y retirar (§2.7, §2.9). Pendiente: el resto, por historia (§5)
 - **Fecha:** 2026-11-24 · **Revisado:** 2026-11-25 (saga de compra, §2.11)
 - **Alcance:** `payments-monetization-service`; para aplicar los beneficios, `server-roles-core-service`,
   `chat-engine-service` y los clientes web y mobile. Infraestructura: Security Group de infra (Terraform)
@@ -86,7 +86,12 @@ hash del método, la ruta y el cuerpo:
 - **Misma clave y mismo pedido:** se devuelve la respuesta guardada (o, en una compra, la que corresponde a su
   estado), sin cobrar de nuevo.
 - **Misma clave con otro cuerpo:** `422`. Es un error del cliente.
-- **Misma clave mientras el primero sigue en curso (`processing`):** `409`.
+- **Misma clave mientras el primero sigue en curso:** en una compra, `409`. En un boost, la clave se reclama
+  con un `INSERT` en la misma transacción que el boost: el segundo pedido espera ahí a que el primero termine y
+  recibe su respuesta.
+- **Solo se guardan las respuestas exitosas** de un boost: si falló (saldo insuficiente, no es miembro), la
+  transacción se deshace con la clave incluida, y el reintento, por ejemplo después de comprar puntos, se
+  ejecuta de verdad.
 - **Vencimiento:** los registros duran 24 h (`expires_at`).
 
 ### 2.5 Pasarela de pago simulada
@@ -132,7 +137,17 @@ de forma asíncrona (webhook), la compra pasa a tener un estado pendiente: eso s
   como historial y el movimiento que lo pagó la sigue apuntando.
 - **Niveles:** 0 con menos de 5 boosts vigentes, 1 desde 5, 2 desde 15 y 3 desde 30. El nivel se recalcula en
   la misma transacción que boostea o retira: sube cuando se cruza un umbral y baja cuando se cae debajo.
-- **Solo boostean los miembros.** Payments le pregunta a Server-Roles por HTTP (§2.9).
+- **Solo boostean los miembros.** Payments le pregunta a Server-Roles por HTTP (§2.9). Retirar no exige ser
+  miembro: quien dejó el servidor puede retirar los boosts que dio.
+- **Todo pasa en una transacción local**, sin saga (no hay nada externo que compensar): reclamar la
+  `Idempotency-Key`, verificar la membresía, bloquear la billetera, verificar el saldo, bloquear el contador,
+  crear el boost, descontar los puntos, recalcular el nivel y dejar los eventos. La consulta a Server-Roles
+  (hasta 2 s) se hace con la clave reclamada pero antes de bloquear la billetera.
+- **API.** `POST /api/v1/boosts/servers/{server_id}` (con `Idempotency-Key`; `201` con el boost, el estado del
+  servidor y el saldo), `DELETE /api/v1/boosts/{boost_id}` (retirar; `404` si no es propio, `409` si ya estaba
+  retirado) y `GET /api/v1/boosts/mine?server_id=` (mis boosts vigentes, para elegir cuál retirar). Saldo
+  insuficiente es `409 insufficient_points` con `balance`, `cost` y `missing` (el saldo faltante del CA 2).
+  Otros códigos: `not_a_member` (`403`), `server_not_found` (`404`), `membership_unavailable` (`503`).
 
 ### 2.8 Eventos (Outbox)
 
@@ -261,10 +276,10 @@ Los errores son `application/problem+json` con un `code` estable (`payment_decli
 | Parte | Estado |
 |---|---|
 | Esquema, migraciones, `FOR UPDATE` documentado (§2.1 a §2.3) | Hecho (`alembic/versions/20261124_b7e2c4a91d30_initial_schema.py`) |
-| Idempotencia (§2.4) | Hecha para comprar (`point_purchases`); para boostear, pendiente (`idempotency_records`) |
+| Idempotencia (§2.4) | Hecha: comprar (`point_purchases`) y boostear (`idempotency_records`) |
 | Comprar puntos, saldo e historial, saga y conciliación (§2.5, §2.6, §2.11) | Hecho (`tests/test_points_purchase.py`, `tests/test_purchase_saga.py`, `tests/test_payment_gateway.py`) |
-| Boostear y retirar (§2.7) | Pendiente (`tests/test_boosts.py`) |
+| Boostear y retirar (§2.7) | Hecho (`tests/test_boosts.py`, `tests/test_server_roles_client.py`) |
 | Ver nivel y beneficios | Pendiente (`tests/test_boost_benefits.py`) |
 | Worker de outbox (§2.8) | Pendiente (`tests/test_outbox.py`) |
-| Regla de red infra → edge:8002 (§2.9) | Pendiente (Terraform) |
+| Regla de red infra → edge:8002 (§2.9) | Escrita en `infra/terraform/security.tf` y `SERVER_ROLES_URL` en el compose de despliegue (orquestador); falta el `terraform apply` |
 | Aplicar beneficios en Server-Roles, Chat y clientes (§2.10) | Pendiente |
