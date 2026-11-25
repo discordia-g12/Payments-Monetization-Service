@@ -33,6 +33,14 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(get_engine(), expire_on_commit=False, class_=AsyncSession)
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """
+    Dependencia de FastAPI para lo que necesita varias transacciones en un mismo pedido (la saga de compra,
+    ADR-001 §2.11): cada paso abre la suya.
+    """
+    return get_sessionmaker()
+
+
 async def get_db() -> AsyncGenerator[AsyncSession]:
     """Dependencia de FastAPI: una sesión por pedido. Cada servicio abre y cierra sus transacciones."""
     async with get_sessionmaker()() as session:
