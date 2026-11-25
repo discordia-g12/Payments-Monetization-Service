@@ -1,8 +1,8 @@
 # ADR-001: Persistencia, billetera de puntos y boosts de servidor
 
-- **Estado:** Aceptado. Implementado: esquema y migraciones (§2.1 a §2.4). Pendiente: el resto, por historia
-  (§5)
-- **Fecha:** 2026-11-24
+- **Estado:** Aceptado. Implementado: esquema y migraciones (§2.1 a §2.4), comprar puntos y su saga (§2.5,
+  §2.6, §2.11). Pendiente: el resto, por historia (§5)
+- **Fecha:** 2026-11-24 · **Revisado:** 2026-11-25 (saga de compra, §2.11)
 - **Alcance:** `payments-monetization-service`; para aplicar los beneficios, `server-roles-core-service`,
   `chat-engine-service` y los clientes web y mobile. Infraestructura: Security Group de infra (Terraform)
 
@@ -58,8 +58,8 @@ que hoy no puede hablar con Server-Roles (nodo edge).
 
   Cada fila guarda `balance_after`, así el historial se muestra sin recalcularlo. **El saldo es siempre la
   suma del historial:** los dos se escriben en la misma transacción.
-- **Una compra rechazada no mueve puntos**, así que no queda en `point_transactions`. Queda registrada en la
-  respuesta guardada por idempotencia (§2.4) y en un evento `payment.failed` (§2.8).
+- **Una compra rechazada no mueve puntos**, así que no queda en `point_transactions`. Queda registrada en
+  `point_purchases` como `failed`, con el motivo (§2.11), y en un evento `payment.failed` (§2.8).
 
 ### 2.3 Concurrencia: `SELECT ... FOR UPDATE`
 
@@ -78,10 +78,13 @@ que hoy no puede hablar con Server-Roles (nodo edge).
 ### 2.4 Idempotencia
 
 Las operaciones que cobran o gastan (comprar, boostear) exigen el header **`Idempotency-Key`**, cuyo valor
-genera el cliente para cada intento. La tabla `idempotency_records` lo guarda **por usuario**, junto con un
+genera el cliente para cada intento (si falta, `400`). La clave es **por usuario**. Para comprar, la clave
+vive en la propia compra (`point_purchases`, único por usuario y clave, §2.11): la fila que guarda el estado de
+la saga ya dice qué responder. Para lo demás (boostear), la tabla `idempotency_records` la guarda junto con un
 hash del método, la ruta y el cuerpo:
 
-- **Misma clave y mismo pedido:** se devuelve la respuesta guardada, sin cobrar de nuevo.
+- **Misma clave y mismo pedido:** se devuelve la respuesta guardada (o, en una compra, la que corresponde a su
+  estado), sin cobrar de nuevo.
 - **Misma clave con otro cuerpo:** `422`. Es un error del cliente.
 - **Misma clave mientras el primero sigue en curso (`processing`):** `409`.
 - **Vencimiento:** los registros duran 24 h (`expires_at`).
@@ -98,7 +101,11 @@ como los del modo test de Stripe:
 | `4000 0000 0000 0002` | Rechazada (`card_declined`) |
 | `4000 0000 0000 9995` | Rechazada (`insufficient_funds`) |
 
-El cobro aprobado devuelve un comprobante (`sim_<uuid>`), que es el `payment_reference` del movimiento.
+El cobro aprobado devuelve un comprobante (`sim_<uuid>`), que es el `payment_reference` del movimiento. La
+interfaz tiene tres operaciones: `charge` (con una clave de idempotencia: la pasarela no cobra dos veces con
+la misma), `refund` (la compensación de §2.11) y `find_charge` (qué pasó con el cobro de una clave, para
+conciliar). La simulada guarda sus cobros en memoria, como si fueran los de la pasarela: si el servicio se
+reinicia, los olvida, y la conciliación da por no cobradas las compras que hubieran quedado a medias.
 Cambiar a Mercado Pago o Stripe es otra implementación de la misma interfaz. Si esa pasarela confirma el pago
 de forma asíncrona (webhook), la compra pasa a tener un estado pendiente: eso se decide en otro ADR.
 
@@ -135,7 +142,7 @@ transacción que el cambio, y un worker (`payments-outbox-worker`) lo publica al
 
 | Routing key | Cuándo | Lo consume |
 |---|---|---|
-| `payment.completed` / `payment.failed` | Cobro aprobado o rechazado | (auditoría, métricas) |
+| `payment.completed` / `payment.failed` / `payment.refunded` | Cobro aprobado, rechazado o devuelto (§2.11) | (auditoría, métricas) |
 | `points.purchased` | Se acreditaron puntos | (métricas) |
 | `server.boosted` / `server.boost_removed` | Se dio o retiró un boost | (métricas) |
 | `server.boost_level_changed` | El servidor cambió de nivel, en cualquier dirección | Server-Roles, Chat |
@@ -172,6 +179,47 @@ los clientes lo tienen sin llamar a Payments.
 de poder cambiarse o agregarse hasta volver al nivel. La vanity URL sí se libera, para que no quede tomada por
 un servidor que ya no tiene el beneficio.
 
+### 2.11 Saga de compra
+
+**Por qué hace falta.** Cobrar es un sistema externo que no entra en la transacción de la base. Si el cobro se
+aprueba y después falla la escritura (se cae la conexión, se reinicia el contenedor), el usuario pagó y no
+recibió los puntos. El resto de Payments no necesita saga: boostear y retirar son una sola transacción local, y
+los beneficios se aplican por eventos que ningún servicio puede rechazar (§2.10).
+
+**Cómo.** Una saga chica, dentro de Payments, con su estado en `point_purchases` (una fila por compra):
+
+1. **Registrar** la compra en `pending` y confirmar. El paquete, los puntos y el precio se copian del catálogo.
+2. **Cobrar** en la pasarela, con el id de la compra como clave de idempotencia.
+   - Rechazado: la compra queda `failed` con el motivo, evento `payment.failed`, respuesta `402`.
+   - La pasarela no responde: no se sabe si cobró. La compra queda `pending` y se responde `503`
+     (`payment_pending`).
+3. **Acreditar**, en una sola transacción: bloquear la compra y la billetera (en ese orden), sumar los puntos,
+   anotar el movimiento, marcar la compra `completed` y dejar `payment.completed` y `points.purchased` en el
+   outbox. Respuesta `201`.
+4. **Compensar**, si el paso 3 falla: devolver el cobro (`refund`), marcar la compra `refunded`, evento
+   `payment.refunded`, respuesta `503` (`purchase_refunded`). Si la devolución también falla, la compra queda
+   `pending`.
+
+**Conciliación.** Cada minuto, el servicio busca las compras `pending` de hace más de 5 minutos (ningún cobro
+tarda tanto) y le pregunta a la pasarela por el cobro de cada una (`find_charge`):
+
+| La pasarela dice | La compra queda |
+|---|---|
+| Aprobado | `completed`: se acredita (recuperación hacia adelante) |
+| Rechazado, o no hay cobro | `failed` (`not_charged` si nunca se cobró) |
+| Devuelto | `refunded` |
+
+Corre dentro del proceso de la API (tarea de fondo en el `lifespan`), no en un worker aparte, porque la
+pasarela simulada guarda sus cobros en memoria y solo los ve ese proceso. Con una pasarela real puede pasar a
+un worker como el del outbox. Acreditar es idempotente: el paso 3 no hace nada si la compra ya no está
+`pending`, así que la conciliación y un pedido lento no pueden acreditar dos veces.
+
+**API.** `POST /api/v1/points/purchases` (`{package_id, card_number}` y `Idempotency-Key`),
+`GET /api/v1/points/wallet` (saldo e historial, paginado con `?limit=&before=`) y `GET /api/v1/points/packages`.
+Los errores son `application/problem+json` con un `code` estable (`payment_declined`, `payment_pending`,
+`purchase_refunded`, `purchase_in_progress`, `unknown_package`, `idempotency_key_reused`,
+`idempotency_key_required`, `unauthenticated`).
+
 ## 3. Alternativas descartadas
 
 - **Pasarela real ya (Mercado Pago o Stripe sandbox):** requiere cuentas y credenciales, y en Mercado Pago el
@@ -187,6 +235,10 @@ un servidor que ya no tiene el beneficio.
   duplica datos de Server-Roles, y la copia puede quedar atrasada justo cuando alguien entra y boostea.
 - **Beneficios solo en Payments**, consultado por cada servicio en cada operación: cada subida de banner o
   adjunto dependería de que Payments responda.
+- **Cobrar y acreditar sin registrar antes la compra:** si el proceso se cae entre el cobro y la acreditación,
+  no queda rastro de que se cobró, y no hay forma de devolver el pago o terminar la compra.
+- **Saga en todas las operaciones** (boostear, beneficios): agrega estados intermedios y compensaciones a
+  operaciones que una transacción local ya resuelve (§2.11).
 - **SQLite en los tests**, como Auth-User: no tiene `FOR UPDATE` ni índices parciales, y los `CHECK` se
   comportan distinto. Los tests de Payments corren contra PostgreSQL (§4).
 
@@ -209,8 +261,8 @@ un servidor que ya no tiene el beneficio.
 | Parte | Estado |
 |---|---|
 | Esquema, migraciones, `FOR UPDATE` documentado (§2.1 a §2.3) | Hecho (`alembic/versions/20261124_b7e2c4a91d30_initial_schema.py`) |
-| Idempotencia (§2.4) | Tabla hecha; falta el middleware |
-| Comprar puntos, saldo e historial (§2.5, §2.6) | Pendiente (`tests/test_points_purchase.py`) |
+| Idempotencia (§2.4) | Hecha para comprar (`point_purchases`); para boostear, pendiente (`idempotency_records`) |
+| Comprar puntos, saldo e historial, saga y conciliación (§2.5, §2.6, §2.11) | Hecho (`tests/test_points_purchase.py`, `tests/test_purchase_saga.py`, `tests/test_payment_gateway.py`) |
 | Boostear y retirar (§2.7) | Pendiente (`tests/test_boosts.py`) |
 | Ver nivel y beneficios | Pendiente (`tests/test_boost_benefits.py`) |
 | Worker de outbox (§2.8) | Pendiente (`tests/test_outbox.py`) |
