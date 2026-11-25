@@ -1,10 +1,10 @@
 -r requirements.txt
 
 # Test
-pytest==9.1.1
-pytest-asyncio==1.4.1.post1 # tests async contra PostgreSQL (misma versión que Auth)
+pytest==9.2.0
+pytest-asyncio==1.5.0 # tests async contra PostgreSQL (misma versión que Auth)
 httpx==0.28.1 # lo usa el TestClient de FastAPI
 
 # Lint y SAST
-ruff==0.16.7
+ruff==0.17.6
 bandit==1.9.4
