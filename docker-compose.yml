@@ -1,15 +1,31 @@
+# Desarrollo y tests sin instalar nada en la máquina (solo Docker):
+#
+#   docker compose up -d --build                          API en localhost:8003 (migra al arrancar) + su base
+#   docker compose --profile test run --rm --build tests  lo mismo que el CI: ruff, bandit, alembic check, pytest
+#   docker compose --profile test run --rm tests pytest -v tests/test_migrations.py   (o cualquier comando)
+#   docker compose --profile test down                    bajar todo (con -v también borra los datos de dev)
+#
+# Los tests usan su propia base (payments_test_db, en memoria): los de migraciones la vacían y no tocan la de
+# desarrollo.
+
+x-dev-image: &dev-image
+  build:
+    context: .
+    target: dev # con las herramientas de test y lint; la imagen de producción es la etapa runtime
+  image: payments-service:dev
+  volumes:
+    - .:/app # el código del repo: los cambios se ven sin reconstruir
+
 services:
   payments_api:
-    build: .
+    <<: *dev-image
     container_name: payments-api
     ports:
       - "8003:8000" # el mismo puerto que publica en producción
-    volumes:
-      - .:/app
-    # Solo en local: recarga al editar (la imagen de producción corre sin --reload)
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # Solo en local: recarga al editar (la imagen de producción corre sin --reload). Migra antes, como la imagen
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@payments_db:5432/${POSTGRES_DB:-payments_db}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@payments_db:5432/${POSTGRES_DB:-payments_db}
     depends_on:
       payments_db:
         condition: service_healthy
@@ -18,7 +34,7 @@ services:
     image: postgres:15-alpine
     container_name: payments-db
     ports:
-      - "5435:5432" # desde el host: uvicorn, pytest y psql
+      - "5435:5432" # desde el host: psql o un cliente de base
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -30,6 +46,34 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # ── Tests (profile test) ──
+
+  tests:
+    <<: *dev-image
+    profiles: ["test"]
+    # Lo mismo que el job `test` del CI. Para correr otra cosa: docker compose --profile test run --rm tests <comando>
+    command: ["sh", "-c", "ruff check . && bandit -r app -ll -q && alembic upgrade head && alembic check && pytest -v"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@payments_test_db:5432/payments_test
+    depends_on:
+      payments_test_db:
+        condition: service_healthy
+
+  payments_test_db:
+    profiles: ["test"]
+    image: postgres:18-alpine # la misma versión mayor que el RDS y el CI
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payments_test
+    tmpfs:
+      - /var/lib/postgresql # en memoria: cada vez que se levanta arranca vacía
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payments_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
 
 volumes:
   payments_db_data:

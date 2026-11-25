@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
 
-    # Para el test de /readyz contra una base real (misma versión mayor que el RDS)
+    # Para las migraciones y los tests contra una base real (misma versión mayor que el RDS)
     services:
       postgres:
         image: postgres:18-alpine
@@ -36,7 +36,7 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/payments_db
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/payments_db
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +54,12 @@ jobs:
 
       - name: Security scan (bandit)
         run: bandit -r app -ll
+
+      # Lo mismo que corre la imagen al arrancar, y que los modelos coincidan con las migraciones
+      - name: Migrations
+        run: |
+          alembic upgrade head
+          alembic check
 
       - name: Run tests
         run: pytest -v
