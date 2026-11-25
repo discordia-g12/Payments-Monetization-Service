@@ -3,7 +3,6 @@
 # Test
 pytest==9.1.1
 pytest-asyncio==1.4.1.post1 # tests async contra PostgreSQL (misma versión que Auth)
-httpx==0.28.1 # lo usa el TestClient de FastAPI
 
 # Lint y SAST
 ruff==0.16.7
