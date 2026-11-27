@@ -1,7 +1,8 @@
 # ADR-001: Persistencia, billetera de puntos y boosts de servidor
 
 - **Estado:** Aceptado. Implementado: esquema y migraciones (§2.1 a §2.4), comprar puntos y su saga (§2.5,
-  §2.6, §2.11), boostear y retirar (§2.7, §2.9). Pendiente: el resto, por historia (§5)
+  §2.6, §2.11), boostear y retirar (§2.7, §2.9), ver nivel y beneficios (§2.7). Pendiente: el worker del
+  outbox y aplicar los beneficios en los otros servicios (§5)
 - **Fecha:** 2026-11-24 · **Revisado:** 2026-11-25 (saga de compra, §2.11)
 - **Alcance:** `payments-monetization-service`; para aplicar los beneficios, `server-roles-core-service`,
   `chat-engine-service` y los clientes web y mobile. Infraestructura: Security Group de infra (Terraform)
@@ -145,7 +146,13 @@ de forma asíncrona (webhook), la compra pasa a tener un estado pendiente: eso s
   (hasta 2 s) se hace con la clave reclamada pero antes de bloquear la billetera.
 - **API.** `POST /api/v1/boosts/servers/{server_id}` (con `Idempotency-Key`; `201` con el boost, el estado del
   servidor y el saldo), `DELETE /api/v1/boosts/{boost_id}` (retirar; `404` si no es propio, `409` si ya estaba
-  retirado) y `GET /api/v1/boosts/mine?server_id=` (mis boosts vigentes, para elegir cuál retirar). Saldo
+  retirado), `GET /api/v1/boosts/mine?server_id=` (mis boosts vigentes, para elegir cuál retirar) y
+  `GET /api/v1/boosts/servers/{server_id}`: nivel, boosts vigentes, beneficios desbloqueados, los tres niveles
+  con su umbral y sus beneficios, el próximo nivel y cuántos boosts faltan (`null` y `0` en el máximo), y
+  cuántos boosts propios tiene quien consulta. Solo para miembros; un servidor sin boosts está en nivel 0. Cada
+  beneficio tiene un `id` estable en inglés (`emoji_slots_20`, `animated_icon`, `server_banner`,
+  `attachments_25mb`, `vanity_url`, `boosted_badge`), que es el que van a usar los servicios que lo aplican
+  (§2.10). Saldo
   insuficiente es `409 insufficient_points` con `balance`, `cost` y `missing` (el saldo faltante del CA 2).
   Otros códigos: `not_a_member` (`403`), `server_not_found` (`404`), `membership_unavailable` (`503`).
 
@@ -279,7 +286,7 @@ Los errores son `application/problem+json` con un `code` estable (`payment_decli
 | Idempotencia (§2.4) | Hecha: comprar (`point_purchases`) y boostear (`idempotency_records`) |
 | Comprar puntos, saldo e historial, saga y conciliación (§2.5, §2.6, §2.11) | Hecho (`tests/test_points_purchase.py`, `tests/test_purchase_saga.py`, `tests/test_payment_gateway.py`) |
 | Boostear y retirar (§2.7) | Hecho (`tests/test_boosts.py`, `tests/test_server_roles_client.py`) |
-| Ver nivel y beneficios | Pendiente (`tests/test_boost_benefits.py`) |
+| Ver nivel y beneficios | Hecho (`tests/test_boost_benefits.py`) |
 | Worker de outbox (§2.8) | Pendiente (`tests/test_outbox.py`) |
 | Regla de red infra → edge:8002 (§2.9) | Escrita en `infra/terraform/security.tf` y `SERVER_ROLES_URL` en el compose de despliegue (orquestador); falta el `terraform apply` |
 | Aplicar beneficios en Server-Roles, Chat y clientes (§2.10) | Pendiente |

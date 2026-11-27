@@ -16,8 +16,24 @@ from app.models import ServerBoost, ServerBoostCounter
 from app.repositories import boosts as boosts_repo
 from app.repositories import idempotency, outbox, wallets
 from app.repositories.idempotency import StoredResponse
-from app.schemas.boosts import BoostOut, BoostResultOut, RemoveBoostResultOut, ServerBoostStatusOut
-from app.services.boost_levels import BOOST_COST_POINTS, level_for
+from app.schemas.boosts import (
+    BenefitOut,
+    BoostOut,
+    BoostResultOut,
+    LevelOut,
+    RemoveBoostResultOut,
+    ServerBoostInfoOut,
+    ServerBoostStatusOut,
+)
+from app.services.boost_levels import (
+    BOOST_COST_POINTS,
+    LEVEL_BENEFITS,
+    LEVEL_THRESHOLDS,
+    Benefit,
+    level_for,
+    next_level,
+    unlocked_benefits,
+)
 
 
 def _server_status(counter: ServerBoostCounter) -> ServerBoostStatusOut:
@@ -46,11 +62,13 @@ def _apply_count(session: AsyncSession, counter: ServerBoostCounter, delta: int,
         )
 
 
-async def _check_membership(server_roles: ServerRolesClient, server_id: str, user_id: str) -> None:
+async def _check_membership(
+    server_roles: ServerRolesClient, server_id: str, user_id: str, forbidden: str = "Solo los miembros pueden boostear."
+) -> None:
     try:
         members = await server_roles.member_ids(server_id)
     except MembershipUnavailableError:
-        # Nunca se boostea sin verificar
+        # Nunca se deja pasar sin verificar
         raise AppError(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "membership_unavailable",
@@ -59,7 +77,7 @@ async def _check_membership(server_roles: ServerRolesClient, server_id: str, use
     if members is None:
         raise AppError(status.HTTP_404_NOT_FOUND, "server_not_found", "El servidor no existe.")
     if user_id not in members:
-        raise AppError(status.HTTP_403_FORBIDDEN, "not_a_member", "Solo los miembros pueden boostear el servidor.")
+        raise AppError(status.HTTP_403_FORBIDDEN, "not_a_member", forbidden)
 
 
 async def boost_server(
@@ -151,3 +169,42 @@ async def remove_boost(session: AsyncSession, *, user_id: str, boost_id: uuid.UU
 
 async def my_boosts(session: AsyncSession, user_id: str, server_id: str | None = None) -> list[ServerBoost]:
     return await boosts_repo.list_active(session, user_id, server_id)
+
+
+async def server_boost_info(
+    session: AsyncSession, server_roles: ServerRolesClient, *, user_id: str, server_id: str
+) -> ServerBoostInfoOut:
+    """
+    Nivel, beneficios desbloqueados y progreso al siguiente nivel de un servidor (historia Ver beneficios, CA 1 y
+    CA 2). Solo para miembros. Un servidor que nunca tuvo boosts está en nivel 0 (no es un 404).
+    """
+    await _check_membership(server_roles, server_id, user_id, "Solo los miembros pueden ver los boosts del servidor.")
+
+    counter = await boosts_repo.get_counter(session, server_id)
+    active = counter.active_boosts if counter else 0
+    level = counter.level if counter else 0
+    upcoming, missing = next_level(active)
+    mine = await boosts_repo.count_active(session, user_id, server_id)
+
+    def benefit_out(lvl: int, benefit: Benefit) -> BenefitOut:
+        return BenefitOut(id=benefit.id, name=benefit.name, description=benefit.description, level=lvl)
+
+    return ServerBoostInfoOut(
+        server_id=server_id,
+        active_boosts=active,
+        level=level,
+        next_level=upcoming,
+        boosts_to_next_level=missing,
+        my_active_boosts=mine,
+        boost_cost_points=BOOST_COST_POINTS,
+        unlocked_benefits=[benefit_out(lvl, benefit) for lvl, benefit in unlocked_benefits(level)],
+        levels=[
+            LevelOut(
+                level=lvl,
+                required_boosts=LEVEL_THRESHOLDS[lvl],
+                unlocked=lvl <= level,
+                benefits=[benefit_out(lvl, benefit) for benefit in LEVEL_BENEFITS[lvl]],
+            )
+            for lvl in sorted(LEVEL_THRESHOLDS)
+        ],
+    )

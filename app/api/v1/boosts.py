@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, IdempotencyKey, ServerRoles
 from app.db.session import get_db
-from app.schemas.boosts import BoostOut, BoostResultOut, MyBoostsOut, RemoveBoostResultOut
+from app.schemas.boosts import BoostOut, BoostResultOut, MyBoostsOut, RemoveBoostResultOut, ServerBoostInfoOut
 from app.services import boosts
 from app.services.boost_levels import BOOST_COST_POINTS
 
@@ -46,6 +46,27 @@ async def boost_server(
         session, server_roles, user_id=user_id, server_id=str(server_id), idempotency_key=idempotency_key
     )
     return JSONResponse(status_code=stored.status_code, content=stored.body)
+
+
+@router.get(
+    "/servers/{server_id}",
+    response_model=ServerBoostInfoOut,
+    summary="Nivel, beneficios y progreso de un servidor",
+    description=(
+        "El nivel de boost del servidor, los beneficios que tiene desbloqueados, todos los niveles con lo que da cada "
+        "uno, y cuántos boosts faltan para el siguiente. Solo para miembros. Sin boosts: nivel 0."
+    ),
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Sin X-User-Id"},
+        status.HTTP_403_FORBIDDEN: {"description": "No es miembro del servidor (`not_a_member`)"},
+        status.HTTP_404_NOT_FOUND: {"description": "El servidor no existe"},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "No se pudo verificar la membresía"},
+    },
+)
+async def server_boost_info(
+    server_id: uuid.UUID, user_id: CurrentUser, session: Session, server_roles: ServerRoles
+) -> ServerBoostInfoOut:
+    return await boosts.server_boost_info(session, server_roles, user_id=user_id, server_id=str(server_id))
 
 
 @router.delete(

@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,3 +50,12 @@ async def list_active(session: AsyncSession, user_id: str, server_id: str | None
         query = query.where(ServerBoost.server_id == server_id)
     result = await session.execute(query.order_by(ServerBoost.created_at.desc(), ServerBoost.id.desc()))
     return list(result.scalars())
+
+
+async def count_active(session: AsyncSession, user_id: str, server_id: str) -> int:
+    """Cuántos boosts vigentes dio un usuario a un servidor."""
+    return await session.scalar(
+        select(func.count())
+        .select_from(ServerBoost)
+        .where(ServerBoost.user_id == user_id, ServerBoost.server_id == server_id, ServerBoost.removed_at.is_(None))
+    )

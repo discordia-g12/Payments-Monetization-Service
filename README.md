@@ -6,7 +6,8 @@ el plan Premium, la billetera de puntos y las mejoras (boosts) de servidor.
 **Estado actual:** tiene la app de FastAPI con SQLAlchemy async (asyncpg), los health checks, las migraciones
 de Alembic con el esquema base (ver [Modelo de datos](#modelo-de-datos)), los tests y el pipeline de CI/CD.
 Funcionalidad: **comprar puntos** (con pasarela simulada y saga de compra), saldo e historial, y **boostear y
-retirar boosts** de servidor. Los beneficios por nivel y Premium vienen después. El Gateway le enruta `/api/v1/payments`, `/api/v1/points` y `/api/v1/boosts`.
+retirar boosts** de servidor, y **ver el nivel y los beneficios** de un servidor. Falta publicar los eventos
+(worker del outbox), aplicar los beneficios en los otros servicios, y Premium. El Gateway le enruta `/api/v1/payments`, `/api/v1/points` y `/api/v1/boosts`.
 
 Decisiones de diseño (persistencia, billetera, concurrencia, pasarela, boosts y beneficios):
 [ADR-001](docs/ADR-001-Puntos-y-Boosts.md).
@@ -77,6 +78,7 @@ publica el 8003 y usa la base `payments_db` del Postgres compartido (en producci
 | `POST` | `/api/v1/boosts/servers/{server_id}` | Boostear (500 puntos) con `Idempotency-Key`. `201` con el boost, el nivel del servidor y el saldo; `409 insufficient_points` con lo que falta; `403` si no es miembro |
 | `DELETE` | `/api/v1/boosts/{boost_id}` | Retirar un boost propio, sin reembolso. El servidor baja de nivel si queda debajo del umbral |
 | `GET` | `/api/v1/boosts/mine` | Mis boosts vigentes (`?server_id=` para uno) |
+| `GET` | `/api/v1/boosts/servers/{server_id}` | Nivel del servidor, beneficios desbloqueados, todos los niveles y cuántos boosts faltan para el siguiente. Solo miembros |
 
 Las rutas de `/api/v1` necesitan `X-User-Id`, que pone Kong al validar el token (sin él, `401`). Los errores
 son `application/problem+json` con un `code` estable. Tarjetas de prueba: `4242 4242 4242 4242` (aprobada),
