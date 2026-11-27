@@ -13,7 +13,9 @@ from app.db.base import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: si no, apaga los loggers que ya existían (los de la app, o los de los tests
+    # que corren después de una migración)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -70,7 +70,7 @@ async def claim_key(session: AsyncSession, user_id: str, key: str, hashed: str) 
     existing = await session.get(IdempotencyRecord, (user_id, key), populate_existing=True)
     if existing.request_hash != hashed:
         raise AppError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             "idempotency_key_reused",
             "Esa Idempotency-Key ya se usó para otro pedido.",
         )

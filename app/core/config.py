@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     server_roles_url: str | None = None
     server_roles_timeout_seconds: float = 2.0
 
+    # RabbitMQ, para publicar el outbox (ADR-001 §2.8): amqp://usuario:clave@host:5672/. Sin ella no se publica
+    # nada y los eventos esperan en outbox_events hasta que esté.
+    rabbitmq_url: str | None = None
+    rabbitmq_exchange: str = "payments.events"
+    outbox_poll_interval_seconds: float = 2.0
+    outbox_batch_size: int = 50
+
 
 def async_database_url(url: str) -> str:
     """La misma base con el driver async (`postgresql+asyncpg`), conservando credenciales escapadas."""

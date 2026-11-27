@@ -45,7 +45,7 @@ async def list_packages(_: CurrentUser) -> PackagesOut:
         status.HTTP_400_BAD_REQUEST: {"description": "Falta Idempotency-Key"},
         status.HTTP_402_PAYMENT_REQUIRED: {"description": "Pago rechazado: no se acreditó nada (`reason`)"},
         status.HTTP_409_CONFLICT: {"description": "Esa compra todavía se está procesando"},
-        status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Paquete inexistente, o clave reusada con otro"},
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {"description": "Paquete inexistente, o clave reusada con otro"},
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "description": "No se pudo confirmar (`payment_pending`) o se devolvió el pago (`purchase_refunded`)"
         },

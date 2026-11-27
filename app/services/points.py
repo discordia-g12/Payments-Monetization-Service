@@ -47,7 +47,7 @@ class PurchaseOutcome:
 
 
 def _unknown_package(package_id: str) -> AppError:
-    return AppError(status.HTTP_422_UNPROCESSABLE_ENTITY, "unknown_package", f"No existe el paquete {package_id}.")
+    return AppError(status.HTTP_422_UNPROCESSABLE_CONTENT, "unknown_package", f"No existe el paquete {package_id}.")
 
 
 def _declined(purchase: PointPurchase) -> AppError:
@@ -249,7 +249,7 @@ async def _replay(sessions: SessionFactory, purchase: PointPurchase, package_id:
     """Reintento con la misma Idempotency-Key: la misma respuesta que la primera vez, sin cobrar de nuevo."""
     if purchase.package_id != package_id:
         raise AppError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             "idempotency_key_reused",
             "Esa Idempotency-Key ya se usó para otra compra.",
         )

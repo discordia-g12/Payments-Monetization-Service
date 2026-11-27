@@ -38,6 +38,10 @@ async def reconcile_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """
+    Tarea de fondo del proceso: la conciliación de compras. El publicador del outbox NO corre acá: es su propio
+    contenedor (`python -m app.workers.outbox_publisher`, ADR-001 §2.8), como en Auth y Server-Roles.
+    """
     task = asyncio.create_task(reconcile_forever()) if get_settings().database_url else None
     yield
     if task:

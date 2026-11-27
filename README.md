@@ -6,8 +6,9 @@ el plan Premium, la billetera de puntos y las mejoras (boosts) de servidor.
 **Estado actual:** tiene la app de FastAPI con SQLAlchemy async (asyncpg), los health checks, las migraciones
 de Alembic con el esquema base (ver [Modelo de datos](#modelo-de-datos)), los tests y el pipeline de CI/CD.
 Funcionalidad: **comprar puntos** (con pasarela simulada y saga de compra), saldo e historial, y **boostear y
-retirar boosts** de servidor, y **ver el nivel y los beneficios** de un servidor. Falta publicar los eventos
-(worker del outbox), aplicar los beneficios en los otros servicios, y Premium. El Gateway le enruta `/api/v1/payments`, `/api/v1/points` y `/api/v1/boosts`.
+retirar boosts** de servidor, y **ver el nivel y los beneficios** de un servidor. Los eventos los publica en el
+exchange `payments.events` de RabbitMQ un worker aparte (`python -m app.workers.outbox_publisher`, contenedor
+`payments-outbox-worker` en el compose del orquestador). Falta aplicar los beneficios en los otros servicios, y Premium. El Gateway le enruta `/api/v1/payments`, `/api/v1/points` y `/api/v1/boosts`.
 
 Decisiones de diseño (persistencia, billetera, concurrencia, pasarela, boosts y beneficios):
 [ADR-001](docs/ADR-001-Puntos-y-Boosts.md).
@@ -64,6 +65,9 @@ publica el 8003 y usa la base `payments_db` del Postgres compartido (en producci
 | `DATABASE_URL` | — | PostgreSQL, en formato de SQLAlchemy (`postgresql+asyncpg://usuario:clave@host:puerto/base`). Se acepta otro driver (`postgresql+psycopg2://`, `postgresql://`): el servicio y Alembic siempre usan asyncpg. Sin ella, `/readyz` responde `503` |
 | `SERVER_ROLES_URL` | — | Server-Roles, para verificar la membresía al boostear (`/internal/servers/{id}/member-ids`). En producción `http://<EDGE_HOST>:8002`. Sin ella, boostear responde `503` (nunca deja pasar sin verificar). En el compose de este repo no está: para probar boosts a mano, levantar Payments con el compose del orquestador |
 | `SERVER_ROLES_TIMEOUT_SECONDS` | `2` | Timeout de esa consulta |
+| `RABBITMQ_URL` | — | Solo el worker del outbox: RabbitMQ (`amqp://usuario:clave@host:5672/`) donde publica en `payments.events` (ADR-001 §2.8). Sin ella el worker no arranca; la API no la usa |
+| `RABBITMQ_EXCHANGE` | `payments.events` | Exchange (topic) donde se publican |
+| `OUTBOX_POLL_INTERVAL_SECONDS` / `OUTBOX_BATCH_SIZE` | `2` / `50` | Cada cuánto busca eventos pendientes y cuántos manda por tanda |
 
 ## API
 

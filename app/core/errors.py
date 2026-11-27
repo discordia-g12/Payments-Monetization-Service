@@ -50,7 +50,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     ]
     return problem_response(
         request,
-        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
         "Hay datos inválidos en el pedido.",
         "validation_error",
         invalid_params=invalid_params,

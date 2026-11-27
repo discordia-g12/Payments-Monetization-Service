@@ -1,8 +1,8 @@
 # ADR-001: Persistencia, billetera de puntos y boosts de servidor
 
 - **Estado:** Aceptado. Implementado: esquema y migraciones (§2.1 a §2.4), comprar puntos y su saga (§2.5,
-  §2.6, §2.11), boostear y retirar (§2.7, §2.9), ver nivel y beneficios (§2.7). Pendiente: el worker del
-  outbox y aplicar los beneficios en los otros servicios (§5)
+  §2.6, §2.11), boostear y retirar (§2.7, §2.9), ver nivel y beneficios (§2.7), publicador del outbox
+  (§2.8). Pendiente: aplicar los beneficios en los otros servicios (§5)
 - **Fecha:** 2026-11-24 · **Revisado:** 2026-11-25 (saga de compra, §2.11)
 - **Alcance:** `payments-monetization-service`; para aplicar los beneficios, `server-roles-core-service`,
   `chat-engine-service` y los clientes web y mobile. Infraestructura: Security Group de infra (Terraform)
@@ -158,9 +158,29 @@ de forma asíncrona (webhook), la compra pasa a tener un estado pendiente: eso s
 
 ### 2.8 Eventos (Outbox)
 
-Exchange `payments.events` (topic). Igual que en Auth-User: el evento se guarda en `outbox_events` en la misma
-transacción que el cambio, y un worker (`payments-outbox-worker`) lo publica al menos una vez, con
-`message_id` = id del evento para que el consumidor pueda deduplicar.
+Exchange `payments.events` (topic, durable). Igual que en Auth-User: el evento se guarda en `outbox_events` en
+la misma transacción que el cambio, y un publicador (`app/workers/outbox_publisher.py`) lo manda a RabbitMQ:
+
+- **Al menos una vez.** Se marca como publicado recién cuando RabbitMQ lo confirma (*publisher confirms*). Si
+  el proceso se corta en el medio, se vuelve a mandar: el consumidor deduplica por `message_id`, que es el id
+  del evento. Los mensajes son persistentes y la routing key es el tipo de evento.
+- **En orden.** Va en tandas, por `created_at`. Si una publicación falla, la tanda se corta ahí: lo anterior
+  queda marcado y el resto sale en la próxima vuelta, sin que un evento posterior se adelante.
+- **`FOR UPDATE SKIP LOCKED`.** Si hay más de un publicador, cada evento lo toma uno solo.
+- **Contenedor propio**, `payments-outbox-worker`, con la misma imagen que la API
+  (`python -m app.workers.outbox_publisher`), como `auth-outbox-worker` y `server-roles-outbox-worker`. Así la
+  API y la publicación se caen y se reinician por separado. Busca pendientes cada 2 s, o sin esperar mientras
+  haya tandas llenas.
+- **Salud:** toca `/tmp/outbox-heartbeat` después de cada vuelta sana, lo que incluye estar conectado a
+  RabbitMQ, y el healthcheck del contenedor falla si tiene más de 30 s. Con SIGTERM (`docker stop`, un deploy)
+  termina la tanda en curso antes de salir. Sin `DATABASE_URL` o sin `RABBITMQ_URL` no arranca: sale con
+  error, en vez de quedar "sano" sin publicar.
+- **Memoria.** Se evaluó correrlo dentro de la API para no sumar un contenedor: los **límites** de memoria del
+  nodo infra ya sumaban 1024 MB en 1 GB. Pero un límite es un tope, no lo que se usa. El 2026-11-26 el nodo
+  tenía 264 MB disponibles (`free -m`: 913 MB totales, 502 MB usados), los seis contenedores usaban ~306 MB en
+  total (`docker stats`) y el worker real usa unos 50 a 70 MB, así que entra, con tope de 96 MB. Queda como riesgo en la deuda técnica I2: si el consumo real se acerca al
+  giga, el primer candidato a achicar es Prometheus.
+- **En el deploy**, `deploy-service.sh payments-service` recrea la API y el worker juntos, como en Auth.
 
 | Routing key | Cuándo | Lo consume |
 |---|---|---|
@@ -271,8 +291,9 @@ Los errores son `application/problem+json` con un `code` estable (`payment_decli
   tests de migraciones la vacían.
 - **Payments depende de Server-Roles para boostear:** si Server-Roles está caído, boostear da `503`. Comprar
   puntos no depende de nadie.
-- **Hay que cambiar infraestructura:** la regla infra → edge:8002, un worker de outbox nuevo en el compose de
-  despliegue, y `DATABASE_URL` en asyncpg una vez desplegada la imagen nueva.
+- **Hay que cambiar infraestructura:** la regla infra → edge:8002, `SERVER_ROLES_URL` para la API, el
+  contenedor `payments-outbox-worker` (con `RABBITMQ_URL`) en el compose de despliegue y en
+  `deploy-service.sh`, y `DATABASE_URL` en asyncpg una vez desplegada la imagen nueva.
 - **No se mueve dinero real.** La pasarela simulada no guarda datos de tarjeta: solo recibe el número de
   prueba y lo descarta.
 - **El costo del boost y el catálogo de paquetes están en el código.** Cambiarlos es un deploy, y los
@@ -287,6 +308,6 @@ Los errores son `application/problem+json` con un `code` estable (`payment_decli
 | Comprar puntos, saldo e historial, saga y conciliación (§2.5, §2.6, §2.11) | Hecho (`tests/test_points_purchase.py`, `tests/test_purchase_saga.py`, `tests/test_payment_gateway.py`) |
 | Boostear y retirar (§2.7) | Hecho (`tests/test_boosts.py`, `tests/test_server_roles_client.py`) |
 | Ver nivel y beneficios | Hecho (`tests/test_boost_benefits.py`) |
-| Worker de outbox (§2.8) | Pendiente (`tests/test_outbox.py`) |
+| Publicador del outbox (§2.8) | Hecho, contenedor `payments-outbox-worker` (`tests/test_outbox.py`); compose de despliegue y `deploy-service.sh` actualizados |
 | Regla de red infra → edge:8002 (§2.9) | Escrita en `infra/terraform/security.tf` y `SERVER_ROLES_URL` en el compose de despliegue (orquestador); falta el `terraform apply` |
 | Aplicar beneficios en Server-Roles, Chat y clientes (§2.10) | Pendiente |
